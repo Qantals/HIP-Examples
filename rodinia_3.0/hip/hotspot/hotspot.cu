@@ -15,10 +15,19 @@
         #define BLOCK_SIZE 16                                                            
 #endif                                                                                   
 
-#define PROFILING 1
 #ifdef PROFILING
 #include "RDTimer.h"
 #endif
+
+#define HIP_CHECK(call)                                                        \
+	do {                                                                      \
+		hipError_t error = (call);                                         \
+		if (error != hipSuccess) {                                         \
+			fprintf(stderr, "HIP error at %s:%d: %s\n", __FILE__,       \
+				__LINE__, hipGetErrorString(error));                    \
+			exit(EXIT_FAILURE);                                         \
+		}                                                                 \
+	} while (0)
 
 #define STR_SIZE 256
 
@@ -38,7 +47,7 @@ float chip_width = 0.016;
 /* ambient temperature, assuming no package at all	*/
 float amb_temp = 80.0;
 
-void run(int argc, char** argv);
+int run(int argc, char** argv);
 
 /* define timer macros */
 #define pin_stats_reset()   startCycle()
@@ -47,11 +56,11 @@ void run(int argc, char** argv);
 
 
 
-void 
-fatal(char *s)
+void
+fatal(const char *s)
 {
 	fprintf(stderr, "error: %s\n", s);
-
+	exit(EXIT_FAILURE);
 }
 
 void writeoutput(float *vect, int grid_rows, int grid_cols, char *file){
@@ -64,10 +73,7 @@ void writeoutput(float *vect, int grid_rows, int grid_cols, char *file){
 	{ 
 		fp = fopen(file, "w" );
 		if( fp == 0 )
-		{
-           fprintf( stderr, "The file was not opened\n" );
-		   fp = stdout;
-		}
+			fatal("unable to open output file");
 	}
 	else
 	{
@@ -82,8 +88,10 @@ void writeoutput(float *vect, int grid_rows, int grid_cols, char *file){
 		 index++;
 	 }
 		
-	fflush(fp);	
-    fclose(fp);	
+	if (fflush(fp) != 0)
+		fatal("unable to flush output file");
+	if (fp != stdout && fclose(fp) != 0)
+		fatal("unable to close output file");
 }
 
 
@@ -95,14 +103,13 @@ void readinput(float *vect, int grid_rows, int grid_cols, char *file){
 	float val;
 
 	if( (fp  = fopen(file, "r" )) ==0 )
-            fprintf( stderr, "The file was not opened\n" );
+		fatal("unable to open input file");
 
 
 	for (i=0; i <= grid_rows-1; i++) 
 	 for (j=0; j <= grid_cols-1; j++)
 	 {
-		fgets(str, STR_SIZE, fp);
-		if (feof(fp))
+		if (fgets(str, STR_SIZE, fp) == NULL)
 			fatal("not enough lines in file");
 		//if ((sscanf(str, "%d%f", &index, &val) != 2) || (index != ((i-1)*(grid_cols-2)+j-1)))
 		if ((sscanf(str, "%f", &val) != 1))
@@ -263,6 +270,7 @@ int compute_tran_temp(float *MatrixPower,float *MatrixTemp[2], int col, int row,
             dst = temp;
             hipLaunchKernelGGL(calculate_temp, dim3(dimGrid), dim3(dimBlock), 0, 0, MIN(num_iterations, total_iterations-t), MatrixPower,MatrixTemp[src],MatrixTemp[dst],\
 		col,row,borderCols, borderRows, Cap,Rx,Ry,Rz,step,time_elapsed);
+		HIP_CHECK(hipGetLastError());
 	}
         return dst;
 }
@@ -283,12 +291,10 @@ int main(int argc, char** argv)
 {
   fprintf(stderr, "WG size of kernel = %d X %d\n", BLOCK_SIZE, BLOCK_SIZE);
 
-    run(argc,argv);
-
-    return EXIT_SUCCESS;
+    return run(argc,argv);
 }
 
-void run(int argc, char** argv)
+int run(int argc, char** argv)
 {
     int size;
     int grid_rows,grid_cols;
@@ -305,6 +311,8 @@ void run(int argc, char** argv)
        (pyramid_height = atoi(argv[2]))<=0||
        (total_iterations = atoi(argv[3]))<=0)
 		usage(argc, argv);
+	if (pyramid_height * 2 >= BLOCK_SIZE)
+		fatal("pyramid height is too large for the work-group size");
 		
 	tfile=argv[4];
     pfile=argv[5];
@@ -361,11 +369,12 @@ void run(int argc, char** argv)
         rdtimercpu->Reset("Malloc Time");
         rdtimercpu->Start();
 #endif
-    hipMalloc((void**)&MatrixTemp[0], sizeof(float)*size);
-    hipMalloc((void**)&MatrixTemp[1], sizeof(float)*size);
-    hipMemcpy(MatrixTemp[0], FilesavingTemp, sizeof(float)*size, hipMemcpyHostToDevice);
+	HIP_CHECK(hipMalloc((void**)&MatrixTemp[0], sizeof(float)*size));
+	HIP_CHECK(hipMalloc((void**)&MatrixTemp[1], sizeof(float)*size));
+	HIP_CHECK(hipMemcpy(MatrixTemp[0], FilesavingTemp, sizeof(float)*size,
+			hipMemcpyHostToDevice));
 
-    hipMalloc((void**)&MatrixPower, sizeof(float)*size);
+	HIP_CHECK(hipMalloc((void**)&MatrixPower, sizeof(float)*size));
 
 /* malloc time-stop, cpu-gpu transfer start */ 
 #ifdef PROFILING
@@ -374,9 +383,10 @@ void run(int argc, char** argv)
         rdtimercpu->Reset("CPU to GPU Transfer Time");
         rdtimercpu->Start();
 #endif
-    hipMemcpy(MatrixTemp[0], FilesavingTemp, sizeof(float)*size, hipMemcpyHostToDevice);
-    hipMemcpy(MatrixPower, FilesavingPower, sizeof(float)*size, hipMemcpyHostToDevice);
+	HIP_CHECK(hipMemcpy(MatrixPower, FilesavingPower, sizeof(float)*size,
+			hipMemcpyHostToDevice));
     fprintf(stdout, "Start computing the transient temperature\n");
+	fflush(stdout);
 
 /*cpu-gpu transfer-stop, kernel exec-start */
 #ifdef PROFILING
@@ -388,7 +398,9 @@ void run(int argc, char** argv)
 #endif
     int ret = compute_tran_temp(MatrixPower,MatrixTemp,grid_cols,grid_rows, \
 	 total_iterations,pyramid_height, blockCols, blockRows, borderCols, borderRows);
+	HIP_CHECK(hipDeviceSynchronize());
 	fprintf(stdout, "Ending simulation\n");
+	fflush(stdout);
 /* kernel exec-stop, gpu-cpu transfer-start */
 #ifdef PROFILING
     kernel_t = rdtimercpu->Stop();
@@ -396,7 +408,8 @@ void run(int argc, char** argv)
     rdtimercpu->Reset("GPU to CPU Transfer Time");
     rdtimercpu->Start();
 #endif
-    hipMemcpy(MatrixOut, MatrixTemp[ret], sizeof(float)*size, hipMemcpyDeviceToHost);
+	HIP_CHECK(hipMemcpy(MatrixOut, MatrixTemp[ret], sizeof(float)*size,
+			hipMemcpyDeviceToHost));
 /* gpu-cpu transfer- stop */ 
 #ifdef PROFILING        
     gpu_to_cpu_t= rdtimercpu->Stop();
@@ -420,8 +433,11 @@ void run(int argc, char** argv)
           delete rdtimerOverallCpu;
 
  #endif
-    hipFree(MatrixPower);
-    hipFree(MatrixTemp[0]);
-    hipFree(MatrixTemp[1]);
-    free(MatrixOut);
+	HIP_CHECK(hipFree(MatrixPower));
+	HIP_CHECK(hipFree(MatrixTemp[0]));
+	HIP_CHECK(hipFree(MatrixTemp[1]));
+	free(FilesavingTemp);
+	free(FilesavingPower);
+	free(MatrixOut);
+	return EXIT_SUCCESS;
 }

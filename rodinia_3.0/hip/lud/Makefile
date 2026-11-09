@@ -1,21 +1,27 @@
-include ../../common/make.config
+# Build the archived HIP Rodinia LUD benchmark for gem5 VEGA_X86.
 
-# C compiler
- CC = gcc
- CC_FLAGS = -g -O2 -Icommon
+HIP_PATH ?= /opt/rocm
+HIPCC ?= $(HIP_PATH)/bin/hipcc
+HIPCC_FLAGS ?= -O2
+GEM5_AMDGPU_TARGETS ?= gfx900,gfx902
 
+TARGET := lud_hip
+HIP_OBJECTS := lud.hip.o lud_kernel.hip.o
+COMMON_OBJECT := common/common.o
 
-$(TESTNAME): common/common.o lud_kernel.hip.o lud.hip.o
-	$(HIPLD) $(CC_FLAGS) $^ -o $@ -lm
+.PHONY: all clean
 
-common/common.o: common/common.c
-	        $(CC) $(CC_FLAGS) -c $< -o $@
+all: $(TARGET)
 
-lud.hip.o: lud.hip.cu
-	$(HIPCC)  $(HIPCC_FLAGS) -c $< -o $@
+$(COMMON_OBJECT): common/common.c common/common.h
+	$(CC) -O2 -Icommon -c $< -o $@
 
-lud_kernel.hip.o: lud_kernel.hip.cu
-	$(HIPCC)  $(HIPCC_FLAGS) -c $< -o $@
+%.hip.o: %.hip.cu common/common.h
+	$(HIPCC) $(HIPCC_FLAGS) --amdgpu-target=$(GEM5_AMDGPU_TARGETS) \
+		-c $< -o $@
+
+$(TARGET): $(HIP_OBJECTS) $(COMMON_OBJECT)
+	$(HIPCC) $(HIPCC_FLAGS) -x none $(HIP_OBJECTS) $(COMMON_OBJECT) -o $@ -lm
 
 clean:
-	        rm -f *.o common/*.o lud *.linkinfo *.perf
+	rm -f $(TARGET) $(HIP_OBJECTS) $(COMMON_OBJECT) *.linkinfo *.perf result.bin

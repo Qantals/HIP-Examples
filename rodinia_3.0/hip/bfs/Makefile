@@ -1,14 +1,21 @@
-include ../../common/make.config
+# Build the archived HIP Rodinia BFS benchmark for gem5's VEGA_X86 model.
+# The target list matches gem5-resources/src/gpu/square/Makefile.
 
-# C compiler
-CC = gcc
-CC_FLAGS = -g
+HIP_PATH ?= /opt/rocm
+HIPCC ?= $(HIP_PATH)/bin/hipcc
+HIPCC_FLAGS ?= -O2
+GEM5_AMDGPU_TARGETS ?= gfx900,gfx902
 
-$(TESTNAME): bfs.hip.o
-	$(HIPLD) $(CC_FLAGS) bfs.hip.o -lm -o bfs
+TARGET := bfs
+SOURCE := bfs.hip.cu
 
-bfs.hip.o: bfs.hip.cu 
-	$(HIPCC)  $(HIPCC_FLAGS) $(KERNEL_DIM) bfs.hip.cu -c -o bfs.hip.o
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCE) kernel.hip.cu kernel2.hip.cu
+	$(HIPCC) $(HIPCC_FLAGS) \
+		--amdgpu-target=$(GEM5_AMDGPU_TARGETS) $(SOURCE) -o $@ -lm
 
 clean:
-	rm -f *.o bfs result.txt *.perf
+	rm -f $(TARGET) *.o result.txt *.perf

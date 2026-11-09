@@ -28,10 +28,17 @@
 
 #include "common/common.h"
 
-#define PROFILING 1
 #ifdef PROFILING
 #include "RDTimer.h"
 #endif
+
+#define HIP_CHECK(call) do { \
+  hipError_t error = (call); \
+  if (error != hipSuccess) { \
+    fprintf(stderr, "HIP error at %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(error)); \
+    exit(EXIT_FAILURE); \
+  } \
+} while (0)
 
 #ifdef RD_WG_SIZE_0_0
         #define BLOCK_SIZE RD_WG_SIZE_0_0
@@ -150,8 +157,11 @@ main ( int argc, char *argv[] )
         rdtimercpu->Reset("Malloc Time");
 	rdtimercpu->Start();
 #endif
-  hipMalloc((void**)&d_m, 
-             matrix_dim*matrix_dim*sizeof(float));
+  if (matrix_dim <= 0 || matrix_dim % BLOCK_SIZE != 0) {
+    fprintf(stderr, "Matrix dimension must be a positive multiple of %d\n", BLOCK_SIZE);
+    return EXIT_FAILURE;
+  }
+  HIP_CHECK(hipMalloc((void**)&d_m, matrix_dim*matrix_dim*sizeof(float)));
 
   /* beginning of timing point */
   stopwatch_start(&sw);
@@ -162,8 +172,8 @@ main ( int argc, char *argv[] )
         rdtimercpu->Reset("CPU to GPU Transfer Time");
         rdtimercpu->Start();
 #endif
-  hipMemcpy(d_m, m, matrix_dim*matrix_dim*sizeof(float), 
-	     hipMemcpyHostToDevice);
+  HIP_CHECK(hipMemcpy(d_m, m, matrix_dim*matrix_dim*sizeof(float),
+                      hipMemcpyHostToDevice));
 /* cpu-gpu transfer-stop ,kernel exec-start */
 #ifdef PROFILING
     cpu_to_gpu_t =  rdtimercpu->Stop();
@@ -179,8 +189,8 @@ main ( int argc, char *argv[] )
     rdtimercpu->Reset("GPU to CPU Transfer Time");
     rdtimercpu->Start();
 #endif
-  hipMemcpy(m, d_m, matrix_dim*matrix_dim*sizeof(float), 
-	     hipMemcpyDeviceToHost);
+  HIP_CHECK(hipMemcpy(m, d_m, matrix_dim*matrix_dim*sizeof(float),
+                      hipMemcpyDeviceToHost));
 
 /* gpu-cpu transfer stop */
 #ifdef PROFILING        
@@ -210,7 +220,15 @@ main ( int argc, char *argv[] )
 
  #endif
 
-  hipFree(d_m);
+  HIP_CHECK(hipFree(d_m));
+
+  FILE *result = fopen("result.bin", "wb");
+  if (!result || fwrite(&matrix_dim, sizeof(matrix_dim), 1, result) != 1 ||
+      fwrite(m, sizeof(float), matrix_dim*matrix_dim, result) !=
+          (size_t)matrix_dim*matrix_dim || fclose(result) != 0) {
+    fprintf(stderr, "Could not write result.bin\n");
+    return EXIT_FAILURE;
+  }
 
 
 

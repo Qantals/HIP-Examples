@@ -99,3 +99,8 @@ rodinia_3.0/hip/streamcluster/run0.diff
 rodinia_3.0/hip/streamcluster/run0.out
 rodinia_3.0/hip/streamcluster/streamcluster
 vectorAdd/vectoradd_hip.exe
+
+# Local Rodinia build outputs.
+rodinia_3.0/hip/lud/lud_hip
+rodinia_3.0/hip/nn/nn-verify
+rodinia_3.0/hip/nw/needle

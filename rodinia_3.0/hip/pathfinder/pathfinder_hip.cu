@@ -22,11 +22,11 @@ int rows, cols;
 int* data;
 int** wall;
 int* result;
-int* resultsRef;
 #define M_SEED 9
 int pyramid_height;
 
-//#define BENCH_PRINT#ifdef PROFILING
+//#define BENCH_PRINT
+#ifdef PROFILING
 SimplePerfSerializer* serializeTime;
 RDTimerCPU* rdtimercpu;
 #endif
@@ -34,44 +34,76 @@ RDTimerCPU* rdtimercpu;
 void
 init(int argc, char** argv)
 {
-	if(argc==4){
-		cols = atoi(argv[1]);
-		rows = atoi(argv[2]);
+	if(argc==4){
+
+		cols = atoi(argv[1]);
+
+		rows = atoi(argv[2]);
+
                 pyramid_height=atoi(argv[3]);
 	}else{
-                printf("Usage: dynproc row_len col_len pyramid_height\n");
-                exit(0);
+                fprintf(stderr, "Usage: pathfinder cols rows pyramid_height\n");
+                exit(EXIT_FAILURE);
         }
-	data = new int[rows*cols];
-	wall = new int*[rows];
-	for(int n=0; n<rows; n++)
-		wall[n]=data+cols*n;
-	result = new int[cols];	resultsRef = new int[cols];
-	
-	int seed = M_SEED;
-	srand(seed);
-
-	for (int i = 0; i < rows; i++)
-    {
-        for (int j = 0; j < cols; j++)
-        {
-            wall[i][j] = rand() % 10;
-        }
-    }	for (int j = 0; j < cols; j++)
-        resultsRef[j] = wall[0][j];
-#ifdef BENCH_PRINT
-    for (int i = 0; i < rows; i++)
-    {
-        for (int j = 0; j < cols; j++)
-        {
-            printf("%d ",wall[i][j]) ;
-        }
-        printf("\n") ;
-    }
+	if (cols <= 0 || rows <= 1 || pyramid_height <= 0 ||
+	    2 * pyramid_height >= BLOCK_SIZE) {
+		fprintf(stderr, "Invalid Pathfinder dimensions or pyramid height\n");
+		exit(EXIT_FAILURE);
+	}
+	data = new int[rows*cols];
+
+	wall = new int*[rows];
+
+	for(int n=0; n<rows; n++)
+
+		wall[n]=data+cols*n;
+
+	result = new int[cols];
+
+
+	int seed = M_SEED;
+
+	srand(seed);
+
+
+
+	for (int i = 0; i < rows; i++)
+
+    {
+
+        for (int j = 0; j < cols; j++)
+
+        {
+
+            wall[i][j] = rand() % 10;
+
+        }
+
+    }
+
+
+#ifdef BENCH_PRINT
+
+    for (int i = 0; i < rows; i++)
+
+    {
+
+        for (int j = 0; j < cols; j++)
+
+        {
+
+            printf("%d ",wall[i][j]) ;
+
+        }
+
+        printf("\n") ;
+
+    }
+
 #endif
 }
 
-void 
+void
 fatal(char *s)
 {
 	fprintf(stderr, "error: %s\n", s);
@@ -82,7 +114,7 @@ fatal(char *s)
 #define CLAMP_RANGE(x, min, max) x = (x<(min)) ? min : ((x>(max)) ? max : x )
 #define MIN(a, b) ((a)<=(b) ? (a) : (b))
 
-__global__ void dynproc_kernel( 
+__global__ void dynproc_kernel(
 	int iteration,
 	int *gpuWall,
 	int *gpuSrc,
@@ -98,24 +130,24 @@ __global__ void dynproc_kernel(
 
 	int bx = hipBlockIdx_x;
 	int tx=hipThreadIdx_x;
-	
+
         // each block finally computes result for a small block
-        // after N iterations. 
-        // it is the non-overlapping small blocks that cover 
+        // after N iterations.
+        // it is the non-overlapping small blocks that cover
         // all the input data
 
         // calculate the small block size
 	int small_block_cols = BLOCK_SIZE-iteration*HALO*2;
 
-        // calculate the boundary for the block according to 
+        // calculate the boundary for the block according to
         // the boundary of its small block
         int blkX = small_block_cols*bx-border;
         int blkXmax = blkX+BLOCK_SIZE-1;
 
         // calculate the global thread coordination
 	int xidx = blkX+tx;
-       
-        // effective range within this block that falls within 
+
+        // effective range within this block that falls within
         // the valid range of the input data
         // used to rule out computation outside the boundary.
         int validXmin = (blkX < 0) ? -blkX : 0;
@@ -123,7 +155,7 @@ __global__ void dynproc_kernel(
 
         int W = tx-1;
         int E = tx+1;
-        
+
         W = (W < validXmin) ? validXmin : W;
         E = (E > validXmax) ? validXmax : E;
 
@@ -134,7 +166,7 @@ __global__ void dynproc_kernel(
 	}
 	__syncthreads(); // [Ronny] Added sync to avoid race on prev Aug. 14 2012
         bool computed;
-        for (int i=0; i<iteration ; i++){ 
+        for (int i=0; i<iteration ; i++){
             computed = false;
             if( IN_RANGE(tx, i+1, BLOCK_SIZE-i-2) &&  \
                   isValid){
@@ -146,7 +178,7 @@ __global__ void dynproc_kernel(
                   shortest = MIN(shortest, right);
                   int index = cols*(startStep+i)+xidx;
                   result[tx] = shortest + gpuWall[index];
-	
+
             }
             __syncthreads();
             if(i==iteration-1)
@@ -157,10 +189,10 @@ __global__ void dynproc_kernel(
       }
 
       // update the global memory
-      // after the last iteration, only threads coordinated within the 
+      // after the last iteration, only threads coordinated within the
       // small block perform the calculation and switch on ``computed''
       if (computed){
-          gpuResults[xidx]=result[tx];		
+          gpuResults[xidx]=result[tx];
       }
 }
 /*
@@ -170,17 +202,21 @@ int calc_path(int *gpuWall, int *gpuResult[2], int rows, int cols, \
 	 int pyramid_height, int blockCols, int borderCols)
 {
         dim3 dimBlock(BLOCK_SIZE);
-        dim3 dimGrid(blockCols);  
-	
+        dim3 dimGrid(blockCols);
+
         int src = 1, dst = 0;
 	for (int t = 0; t < rows-1; t+=pyramid_height) {
             int temp = src;
             src = dst;
             dst = temp;
-            hipLaunchKernelGGL(dynproc_kernel, dim3(dimGrid), dim3(dimBlock), 0, 0, 
-                MIN(pyramid_height, rows-t-1), 
+            hipLaunchKernelGGL(dynproc_kernel, dim3(dimGrid), dim3(dimBlock), 0, 0,
+                MIN(pyramid_height, rows-t-1),
                 gpuWall, gpuResult[src], gpuResult[dst],
                 cols,rows, t, borderCols);
+	    if (hipGetLastError() != hipSuccess) {
+	        fprintf(stderr, "Pathfinder HIP kernel launch failed\n");
+	        return -1;
+	    }
 	}
         return dst;
 }
@@ -188,26 +224,29 @@ int calc_path(int *gpuWall, int *gpuResult[2], int rows, int cols, \
 int main(int argc, char** argv)
 {
     int num_devices;
-    
+
 #ifdef PROFILING
 	float overall_cpu_t;
-    	RDTimerCPU* rdtimerOverallCpu = new RDTimerCPU();
-    	rdtimerOverallCpu->Reset("Overall CPU Time");
-    	serializeTime = new SimplePerfSerializer( argv[0] );
-    	rdtimercpu = new RDTimerCPU();
-    	rdtimerOverallCpu->Start();
+	RDTimerCPU* rdtimerOverallCpu = new RDTimerCPU();
+	rdtimerOverallCpu->Reset("Overall CPU Time");
+	serializeTime = new SimplePerfSerializer( argv[0] );
+	rdtimercpu = new RDTimerCPU();
+	rdtimerOverallCpu->Start();
 #endif
-    hipGetDeviceCount(&num_devices);
-    if (num_devices > 1) hipSetDevice(DEVICE);
+    if (hipGetDeviceCount(&num_devices) != hipSuccess || num_devices < 1 ||
+        hipSetDevice(DEVICE) != hipSuccess) {
+        fprintf(stderr, "No usable HIP device\n");
+        return EXIT_FAILURE;
+    }
 
     int retVal= run(argc,argv);
-    
-#ifdef PROFILING    
+
+#ifdef PROFILING
 	overall_cpu_t = rdtimerOverallCpu->Stop();
 	serializeTime->Serialize(rdtimerOverallCpu);
 
 	//printf("Overall CPU time = %fs\n", overall_cpu_t);
-	
+
 	delete rdtimercpu;
 	delete rdtimerOverallCpu;
 	delete serializeTime;
@@ -217,7 +256,6 @@ int main(int argc, char** argv)
 
 int run(int argc, char** argv)
 {
-	int retVal = 0;
     init(argc, argv);
 
     /* --------------- pyramid parameters --------------- */
@@ -227,25 +265,30 @@ int run(int argc, char** argv)
 
     printf("pyramidHeight: %d\ngridSize: [%d]\nborder:[%d]\nblockSize: %d\nblockGrid:[%d]\ntargetBlock:[%d]\n",\
 	pyramid_height, cols, borderCols, BLOCK_SIZE, blockCols, smallBlockCol);
-	
+
     int *gpuWall, *gpuResult[2];
     int size = rows*cols;
 #ifdef PROFILING
 	rdtimercpu->Reset("Malloc Time");
 	rdtimercpu->Start();
 #endif
-    hipMalloc((void**)&gpuResult[0], sizeof(int)*cols);
-    hipMalloc((void**)&gpuResult[1], sizeof(int)*cols);
-    hipMalloc((void**)&gpuWall, sizeof(int)*(size-cols));
+    if (hipMalloc((void**)&gpuResult[0], sizeof(int)*cols) != hipSuccess ||
+        hipMalloc((void**)&gpuResult[1], sizeof(int)*cols) != hipSuccess ||
+        hipMalloc((void**)&gpuWall, sizeof(int)*(size-cols)) != hipSuccess) {
+        fprintf(stderr, "Pathfinder HIP allocation failed\n");
+        return EXIT_FAILURE;
+    }
 #ifdef PROFILING
     rdtimercpu->Stop();
     serializeTime->Serialize(rdtimercpu);
     rdtimercpu->Reset("CPU to GPU Transfer Time");
     rdtimercpu->Start();
 #endif
-    hipMemcpy(gpuResult[0], data, sizeof(int)*cols, hipMemcpyHostToDevice);
-    
-    hipMemcpy(gpuWall, data+cols, sizeof(int)*(size-cols), hipMemcpyHostToDevice);
+    if (hipMemcpy(gpuResult[0], data, sizeof(int)*cols, hipMemcpyHostToDevice) != hipSuccess ||
+        hipMemcpy(gpuWall, data+cols, sizeof(int)*(size-cols), hipMemcpyHostToDevice) != hipSuccess) {
+        fprintf(stderr, "Pathfinder HIP input transfer failed\n");
+        return EXIT_FAILURE;
+    }
 #ifdef PROFILING
     rdtimercpu->Stop();
     serializeTime->Serialize(rdtimercpu);
@@ -254,58 +297,48 @@ int run(int argc, char** argv)
 #endif
     int final_ret = calc_path(gpuWall, gpuResult, rows, cols, \
 	 pyramid_height, blockCols, borderCols);
+    if (final_ret < 0) return EXIT_FAILURE;
 #ifdef PROFILING
     rdtimercpu->Stop();
     serializeTime->Serialize(rdtimercpu);
     rdtimercpu->Reset("GPU to CPU Transfer Time");
     rdtimercpu->Start();
 #endif
-    hipMemcpy(result, gpuResult[final_ret], sizeof(int)*cols, hipMemcpyDeviceToHost);
-#ifdef PROFILING    
+    if (hipDeviceSynchronize() != hipSuccess ||
+        hipMemcpy(result, gpuResult[final_ret], sizeof(int)*cols, hipMemcpyDeviceToHost) != hipSuccess) {
+        fprintf(stderr, "Pathfinder HIP execution or output transfer failed\n");
+        return EXIT_FAILURE;
+    }
+#ifdef PROFILING
     rdtimercpu->Stop();
     serializeTime->Serialize(rdtimercpu);
 #endif
-	//
-	int *srcRef, *dstRef, *tempRef;
-    int minRef;
-
-    dstRef = resultsRef;
-    srcRef = new int[cols];
-
-   // pin_stats_reset();
-    for (int t = 0; t < rows-1; t++) {
-        tempRef = srcRef;
-        srcRef = dstRef;
-        dstRef = tempRef;
-        for(int n = 0; n < cols; n++){
-          minRef = srcRef[n];
-          if (n > 0)
-            minRef = MIN(minRef, srcRef[n-1]);
-          if (n < cols-1)
-            minRef = MIN(minRef, srcRef[n+1]);
-          dstRef[n] = wall[t+1][n]+minRef;
-        }
-    }
-
+	FILE *output = fopen("result.txt", "w");
+	if (output == NULL) {
+		perror("result.txt");
+		return EXIT_FAILURE;
+	}
 	for (int i = 0; i < cols; i++)
-	{
-		if (result[i] != dstRef[i])
-		{
-			printf("failed results at %d %d %d\n", i, result[i], dstRef[i]);
-			retVal = 1;
-		}
+		fprintf(output, "%d\n", result[i]);
+	if (fclose(output) != 0) {
+		perror("result.txt");
+		return EXIT_FAILURE;
 	}
 
+#ifdef BENCH_PRINT
 
-	//
+    for (int i = 0; i < cols; i++)
 
-#ifdef BENCH_PRINT
-    for (int i = 0; i < cols; i++)
-            printf("%d ",data[i]) ;
-    printf("\n") ;
-    for (int i = 0; i < cols; i++)
-            printf("%d ",result[i]) ;
-    printf("\n") ;
+            printf("%d ",data[i]) ;
+
+    printf("\n") ;
+
+    for (int i = 0; i < cols; i++)
+
+            printf("%d ",result[i]) ;
+
+    printf("\n") ;
+
 #endif
 
 
@@ -316,10 +349,6 @@ int run(int argc, char** argv)
     delete [] data;
     delete [] wall;
     delete [] result;
-	
-	delete [] dstRef;
-    delete [] srcRef;
-	//delete [] resultsRef;
-	return retVal;
-}
 
+	return EXIT_SUCCESS;
+}

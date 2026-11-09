@@ -15,10 +15,17 @@
 #include "backprop_cuda_kernel.cu"
 #include "backprop.h"
 
-#define PROFILING 1
 #ifdef PROFILING
 #include "RDTimer.h"
 #endif
+
+#define HIP_CHECK(call) do { \
+  hipError_t error = (call); \
+  if (error != hipSuccess) { \
+    fprintf(stderr, "HIP error at %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(error)); \
+    exit(EXIT_FAILURE); \
+  } \
+} while (0)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -85,6 +92,7 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
   float sum;
   float *input_weights_one_dim;
   float *input_weights_prev_one_dim;
+  float raw_sum[WIDTH + 1];
   num_blocks = in / 16;  
   dim3  grid( 1 , num_blocks);
   dim3  threads(16 , 16);
@@ -100,6 +108,10 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
   input_weights_one_dim = (float *) malloc((in + 1)* (hid + 1) * sizeof(float));
   input_weights_prev_one_dim = (float *) malloc((in + 1)* (hid + 1) * sizeof(float));
   partial_sum = (float *) malloc(num_blocks * WIDTH * sizeof(float));
+  if (!input_weights_one_dim || !input_weights_prev_one_dim || !partial_sum) {
+    fprintf(stderr, "Could not allocate backprop host buffers\n");
+    exit(EXIT_FAILURE);
+  }
  
   // this preprocessing stage is added to correct the bugs of wrong memcopy using two-dimensional net->inputweights
   for (int k = 0; k <= in; k++) {	
@@ -120,10 +132,10 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
         rdtimercpu->Start();
 #endif
   
-  hipMalloc((void**) &input_cuda, (in + 1) * sizeof(float));
-  hipMalloc((void**) &output_hidden_cuda, (hid + 1) * sizeof(float));
-  hipMalloc((void**) &input_hidden_cuda, (in + 1) * (hid + 1) * sizeof(float));
-  hipMalloc((void**) &hidden_partial_sum, num_blocks * WIDTH * sizeof(float));
+  HIP_CHECK(hipMalloc((void**) &input_cuda, (in + 1) * sizeof(float)));
+  HIP_CHECK(hipMalloc((void**) &output_hidden_cuda, (hid + 1) * sizeof(float)));
+  HIP_CHECK(hipMalloc((void**) &input_hidden_cuda, (in + 1) * (hid + 1) * sizeof(float)));
+  HIP_CHECK(hipMalloc((void**) &hidden_partial_sum, num_blocks * WIDTH * sizeof(float)));
 /* malloc time-stop, cpu-gpu transfer start */ 
 #ifdef PROFILING
         alloc_t1 = rdtimercpu->Stop();
@@ -150,8 +162,8 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
         rdtimercpu->Reset("CPU to GPU Transfer Time");
         rdtimercpu->Start();
 #endif
-  hipMemcpy(input_cuda, net->input_units, (in + 1) * sizeof(float), hipMemcpyHostToDevice);
-  hipMemcpy(input_hidden_cuda, input_weights_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice);
+  HIP_CHECK(hipMemcpy(input_cuda, net->input_units, (in + 1) * sizeof(float), hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(input_hidden_cuda, input_weights_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice));
 
 /*cpu-gpu transfer-stop, kernel exec-start */
 #ifdef PROFILING
@@ -172,7 +184,7 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
     kernel_t1 = rdtimercpu->Stop();
     serializeTime->Serialize(rdtimercpu);
 #endif
-  hipDeviceSynchronize();
+  HIP_CHECK(hipDeviceSynchronize());
   
   hipError_t error = hipGetLastError();
 	if (error != hipSuccess) {
@@ -185,7 +197,7 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
     rdtimercpu->Reset("GPU to CPU Transfer Time");
     rdtimercpu->Start();
 #endif  
-  hipMemcpy(partial_sum, hidden_partial_sum, num_blocks * WIDTH * sizeof(float), hipMemcpyDeviceToHost);
+  HIP_CHECK(hipMemcpy(partial_sum, hidden_partial_sum, num_blocks * WIDTH * sizeof(float), hipMemcpyDeviceToHost));
 /* gpu-cpu transfer- stop */ 
 #ifdef PROFILING        
     gpu_to_cpu_t1= rdtimercpu->Stop();
@@ -196,7 +208,8 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
     for (int k = 0; k < num_blocks; k++) {	
       sum += partial_sum[k * hid + j-1] ;
     }
-	sum += net->input_weights[0][j];
+    raw_sum[j] = sum;
+    sum += net->input_weights[0][j];
 	net-> hidden_units[j] = float(1.0 / (1.0 + exp(-sum)));
   }
   #endif
@@ -221,8 +234,8 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
         rdtimercpu->Start();
 #endif
 
-  hipMalloc((void**) &hidden_delta_cuda, (hid + 1) * sizeof(float));
-  hipMalloc((void**) &input_prev_weights_cuda, (in + 1) * (hid + 1) * sizeof(float));
+  HIP_CHECK(hipMalloc((void**) &hidden_delta_cuda, (hid + 1) * sizeof(float)));
+  HIP_CHECK(hipMalloc((void**) &input_prev_weights_cuda, (in + 1) * (hid + 1) * sizeof(float)));
 
 /* malloc time-stop, cpu-gpu transfer start */ 
 #ifdef PROFILING
@@ -231,9 +244,9 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
         rdtimercpu->Reset("CPU to GPU Transfer Time");
         rdtimercpu->Start();
 #endif
-  hipMemcpy(hidden_delta_cuda, net->hidden_delta, (hid + 1) * sizeof(float), hipMemcpyHostToDevice);
-  hipMemcpy(input_prev_weights_cuda, input_weights_prev_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice);
-  hipMemcpy(input_hidden_cuda, input_weights_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice);
+  HIP_CHECK(hipMemcpy(hidden_delta_cuda, net->hidden_delta, (hid + 1) * sizeof(float), hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(input_prev_weights_cuda, input_weights_prev_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(input_hidden_cuda, input_weights_one_dim, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyHostToDevice));
 
 /*cpu-gpu transfer-stop, kernel exec-start */
 #ifdef PROFILING
@@ -244,13 +257,14 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
     rdtimercpu->Start();
 #endif
 
-  hipLaunchKernelGGL(bpnn_adjust_weights_cuda, dim3(grid), dim3(threads ), 0, 0, hidden_delta_cuda,  
+  hipLaunchKernelGGL(bpnn_adjust_weights_cuda, dim3(grid), dim3(threads ), 0, 0, hidden_delta_cuda,
 												hid, 
 												input_cuda, 
 												in,
 												input_hidden_cuda, 
 												input_prev_weights_cuda
-												);
+								);
+  HIP_CHECK(hipGetLastError());
 /* kernel exec-stop, gpu-cpu transfer-start */
 #ifdef PROFILING
     kernel_t2 = rdtimercpu->Stop();
@@ -258,8 +272,8 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
     rdtimercpu->Reset("GPU to CPU Transfer Time");
     rdtimercpu->Start();
 #endif
-  hipMemcpy(net->input_units, input_cuda, (in + 1) * sizeof(float), hipMemcpyDeviceToHost);
-  hipMemcpy(input_weights_one_dim, input_hidden_cuda, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyDeviceToHost);
+  HIP_CHECK(hipMemcpy(net->input_units, input_cuda, (in + 1) * sizeof(float), hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(input_weights_one_dim, input_hidden_cuda, (in + 1) * (hid + 1) * sizeof(float), hipMemcpyDeviceToHost));
 /* gpu-cpu transfer- stop */ 
 #ifdef PROFILING        
     gpu_to_cpu_t2= rdtimercpu->Stop();
@@ -282,12 +296,27 @@ void bpnn_train_cuda(BPNN *net, float *eo, float *eh)
 
  #endif
 
-  hipFree(input_cuda);
-  hipFree(output_hidden_cuda);
-  hipFree(input_hidden_cuda);
-  hipFree(hidden_partial_sum);
-  hipFree(input_prev_weights_cuda);
-  hipFree(hidden_delta_cuda);
+  FILE *result = fopen("result.txt", "w");
+  if (!result) {
+    fprintf(stderr, "Could not open result.txt\n");
+    exit(EXIT_FAILURE);
+  }
+  fprintf(result, "input %d\n", in);
+  for (int j = 1; j <= hid; j++)
+    fprintf(result, "sum %d %.9g\n", j, raw_sum[j]);
+  for (int j = 1; j <= hid; j++)
+    fprintf(result, "hidden %d %.9g\n", j, net->hidden_units[j]);
+  if (fclose(result) != 0) {
+    fprintf(stderr, "Could not close result.txt\n");
+    exit(EXIT_FAILURE);
+  }
+
+  HIP_CHECK(hipFree(input_cuda));
+  HIP_CHECK(hipFree(output_hidden_cuda));
+  HIP_CHECK(hipFree(input_hidden_cuda));
+  HIP_CHECK(hipFree(hidden_partial_sum));
+  HIP_CHECK(hipFree(input_prev_weights_cuda));
+  HIP_CHECK(hipFree(hidden_delta_cuda));
   
   free(partial_sum);
   free(input_weights_one_dim);

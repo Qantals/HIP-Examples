@@ -1,29 +1,27 @@
-include ../../common/make.config
+# Build archived HIP Rodinia backprop for gem5 VEGA_X86.
 
-printenv:
-	@echo 'OMPCC = "$(OMPCC)"'
-	@echo 'OMP_FLAGS = "$(OMP_FLAGS)"'
-	@echo 'HIP_PATH = "$(HIP_PATH)"'
-	@echo 'HIPCC_FLAGS = "$(HIPCC_FLAGS)"'
-	@echo 'CUDA_LIB_DIR = "$(CUDA_LIB_DIR)"'
-	
-$(TESTNAME): backprop.o facetrain.o imagenet.o backprop_cuda.o
-	$(HIPLD) backprop.o facetrain.o imagenet.o backprop_cuda.o -o backprop -lm
+HIP_PATH ?= /opt/rocm
+HIPCC ?= $(HIP_PATH)/bin/hipcc
+HIPCC_FLAGS ?= -O2
+GEM5_AMDGPU_TARGETS ?= gfx900,gfx902
 
-%.o: %.[ch]
-	$(HIPCC) $(HIPCC_FLAGS) $< -c
+TARGET := backprop
+HOST_OBJECTS := backprop.o facetrain.o imagenet.o
+HIP_OBJECT := backprop_cuda.o
 
-facetrain.o: facetrain.c backprop.h
-	$(OMPCC) $(OMP_FLAGS) facetrain.c -c
-	
-backprop.o: backprop.c backprop.h
-	$(OMPCC) $(OMP_FLAGS) backprop.c -c
-	
-backprop_cuda.o: backprop_cuda.cu backprop_cuda_kernel.cu backprop.h $(HIP_DEPS)
-	$(HIPCC) $(HIPCC_FLAGS) -c backprop_cuda.cu
+.PHONY: all clean
 
-imagenet.o: imagenet.c backprop.h
-	$(OMPCC) $(OMP_FLAGS) imagenet.c -c
-	
+all: $(TARGET)
+
+$(HOST_OBJECTS): %.o: %.c backprop.h
+	$(CC) -O2 -c $< -o $@
+
+$(HIP_OBJECT): backprop_cuda.cu backprop_cuda_kernel.cu backprop.h
+	$(HIPCC) $(HIPCC_FLAGS) --amdgpu-target=$(GEM5_AMDGPU_TARGETS) \
+		-c $< -o $@
+
+$(TARGET): $(HOST_OBJECTS) $(HIP_OBJECT)
+	$(HIPCC) $(HIPCC_FLAGS) -x none $^ -o $@ -lm
+
 clean:
-	rm -f *.o *~ backprop out_hip.txt backprop_cuda.linkinfo *.perf
+	rm -f $(TARGET) $(HOST_OBJECTS) $(HIP_OBJECT) *.linkinfo *.perf

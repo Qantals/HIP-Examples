@@ -3,6 +3,15 @@
 #include "cuda.h"
 #endif
 #include <stdio.h>
+#include <stdlib.h>
+
+#define HIP_CHECK(call) do { \
+  hipError_t error = (call); \
+  if (error != hipSuccess) { \
+    fprintf(stderr, "HIP error at %s:%d: %s\n", __FILE__, __LINE__, hipGetErrorString(error)); \
+    exit(EXIT_FAILURE); \
+  } \
+} while (0)
 
 #ifdef RD_WG_SIZE_0_0
         #define BLOCK_SIZE RD_WG_SIZE_0_0
@@ -203,14 +212,15 @@ void lud_cuda(float *m, int matrix_dim)
 {
   int i=0;
   dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-  float *m_debug = (float*)malloc(matrix_dim*matrix_dim*sizeof(float));
-
   for (i=0; i < matrix_dim-BLOCK_SIZE; i += BLOCK_SIZE) {
       hipLaunchKernelGGL(lud_diagonal, dim3(1), dim3(BLOCK_SIZE), 0, 0, m, matrix_dim, i);
+      HIP_CHECK(hipGetLastError());
       hipLaunchKernelGGL(lud_perimeter, dim3((matrix_dim-i)/BLOCK_SIZE-1), dim3(BLOCK_SIZE*2), 0, 0, m, matrix_dim, i);
+      HIP_CHECK(hipGetLastError());
       dim3 dimGrid((matrix_dim-i)/BLOCK_SIZE-1, (matrix_dim-i)/BLOCK_SIZE-1);
       hipLaunchKernelGGL(lud_internal, dim3(dimGrid), dim3(dimBlock), 0, 0, m, matrix_dim, i); 
+      HIP_CHECK(hipGetLastError());
   }
   hipLaunchKernelGGL(lud_diagonal, dim3(1), dim3(BLOCK_SIZE), 0, 0, m, matrix_dim, i);
+  HIP_CHECK(hipGetLastError());
 }
-

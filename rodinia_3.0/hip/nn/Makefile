@@ -1,19 +1,21 @@
-include ../../common/make.config
+# Build the archived HIP Rodinia nn benchmark for gem5's VEGA_X86 GPU model.
+# The target list matches gem5-resources/src/gpu/square/Makefile.
 
-CUDA_LIB =	-lcuda -lcudart
-CUDA_FLAG = -arch sm_20
+HIP_PATH ?= /opt/rocm
+HIPCC ?= $(HIP_PATH)/bin/hipcc
+HIPCC_FLAGS ?= -O2
+GEM5_AMDGPU_TARGETS ?= gfx900,gfx902
 
-C_C = gcc
+TARGET := nn
+SOURCE := nn_hip.cu
 
-$(TESTNAME):	./nn.o 
-	$(HIPLD)	./nn.o \
-			-lm \
-                       -o $(TESTNAME)
+.PHONY: all clean
 
-nn.o:	./nn_hip.cu
-	$(HIPCC)  $(HIPCC_FLAGS)	$(KERNEL_DIM) ./nn_hip.cu \
-			-c \
-			-o ./nn.o
+all: $(TARGET)
 
-clean: 
-	rm -f	*.o  $(TESTNAME) *.perf
+$(TARGET): $(SOURCE)
+	$(HIPCC) $(HIPCC_FLAGS) \
+		--amdgpu-target=$(GEM5_AMDGPU_TARGETS) $< -o $@ -lm
+
+clean:
+	rm -f $(TARGET) nn-verify *.o *.perf
